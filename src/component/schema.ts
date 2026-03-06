@@ -1,21 +1,6 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
-
-/**
- * Severity levels for audit events.
- * - info: Regular operations (login, profile update)
- * - warning: Potentially concerning actions (password change, permission change)
- * - error: Failed operations or errors
- * - critical: Security-sensitive events (unauthorized access attempts, data breaches)
- */
-export const vSeverity = v.union(
-  v.literal("info"),
-  v.literal("warning"),
-  v.literal("error"),
-  v.literal("critical")
-);
-
-export type Severity = "info" | "warning" | "error" | "critical";
+import { vSeverity } from "./shared.js";
 
 export default defineSchema({
   /**

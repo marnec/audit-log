@@ -5,6 +5,7 @@ import {
   internalMutation,
 } from "./_generated/server.js";
 import type { Id } from "./_generated/dataModel.js";
+import { internal } from "./_generated/api.js";
 import schema from "./schema.js";
 import {
   vSeverity,
@@ -14,13 +15,49 @@ import {
   vPagination,
   vCleanupOptions,
   vConfigOptions,
-  type Severity,
 } from "./shared.js";
 import { aggregateBySeverity, aggregateByAction } from "./aggregates.js";
 
 const auditLogValidator = schema.tables.auditLogs.validator.extend({
   _id: v.id("auditLogs"),
   _creationTime: v.number(),
+});
+
+/**
+ * Internal: update aggregates for a single audit log document.
+ * Scheduled asynchronously from log() and logChange() to avoid
+ * B-tree contention on the aggregate tables during writes.
+ * Uses insertIfDoesNotExist for idempotent retries.
+ */
+export const _updateAggregates = internalMutation({
+  args: { docId: v.id("auditLogs") },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const doc = await ctx.db.get(args.docId);
+    if (!doc) return null;
+    await aggregateBySeverity.insertIfDoesNotExist(ctx, doc);
+    await aggregateByAction.insertIfDoesNotExist(ctx, doc);
+    return null;
+  },
+});
+
+/**
+ * Internal: update aggregates for a batch of audit log documents.
+ * Scheduled asynchronously from logBulk() to handle multiple docs
+ * in a single transaction without contending with user-facing writes.
+ */
+export const _updateAggregatesBatch = internalMutation({
+  args: { docIds: v.array(v.id("auditLogs")) },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    for (const docId of args.docIds) {
+      const doc = await ctx.db.get(docId);
+      if (!doc) continue;
+      await aggregateBySeverity.insertIfDoesNotExist(ctx, doc);
+      await aggregateByAction.insertIfDoesNotExist(ctx, doc);
+    }
+    return null;
+  },
 });
 
 /**
@@ -37,10 +74,8 @@ export const log = mutation({
       timestamp,
     });
 
-    // Insert into aggregates for efficient counting
-    const doc = (await ctx.db.get(logId))!;
-    await aggregateBySeverity.insert(ctx, doc);
-    await aggregateByAction.insert(ctx, doc);
+    // Schedule async aggregate update to avoid B-tree contention
+    await ctx.scheduler.runAfter(0, internal.lib._updateAggregates, { docId: logId });
 
     return logId;
   },
@@ -77,10 +112,8 @@ export const logChange = mutation({
       timestamp,
     });
 
-    // Insert into aggregates for efficient counting
-    const doc = (await ctx.db.get(logId))!;
-    await aggregateBySeverity.insert(ctx, doc);
-    await aggregateByAction.insert(ctx, doc);
+    // Schedule async aggregate update to avoid B-tree contention
+    await ctx.scheduler.runAfter(0, internal.lib._updateAggregates, { docId: logId });
 
     return logId;
   },
@@ -104,14 +137,14 @@ export const logBulk = mutation({
         timestamp,
       });
       ids.push(logId);
-
-      // Insert into aggregates for efficient counting
-      const doc = (await ctx.db.get(logId))!;
-      await aggregateBySeverity.insert(ctx, doc);
-      await aggregateByAction.insert(ctx, doc);
     }
 
-    return ids as Id<"auditLogs">[];
+    const typedIds = ids as Id<"auditLogs">[];
+
+    // Schedule a single batched aggregate update for all inserted docs
+    await ctx.scheduler.runAfter(0, internal.lib._updateAggregatesBatch, { docIds: typedIds });
+
+    return typedIds;
   },
 });
 
@@ -127,26 +160,14 @@ export const queryByResource = query({
   },
   returns: v.array(auditLogValidator),
   handler: async (ctx, args) => {
-    let q = ctx.db
+    return await ctx.db
       .query("auditLogs")
-      .withIndex("by_resource", (q) =>
-        q.eq("resourceType", args.resourceType).eq("resourceId", args.resourceId)
-      )
-      .order("desc");
-
-    if (args.fromTimestamp) {
-      q = ctx.db
-        .query("auditLogs")
-        .withIndex("by_resource", (q) =>
-          q
-            .eq("resourceType", args.resourceType)
-            .eq("resourceId", args.resourceId)
-            .gte("timestamp", args.fromTimestamp!)
-        )
-        .order("desc");
-    }
-
-    return await q.take(args.limit ?? 50);
+      .withIndex("by_resource", (q) => {
+        const q2 = q.eq("resourceType", args.resourceType).eq("resourceId", args.resourceId);
+        return args.fromTimestamp ? q2.gte("timestamp", args.fromTimestamp) : q2;
+      })
+      .order("desc")
+      .take(args.limit ?? 50);
   },
 });
 
@@ -164,13 +185,12 @@ export const queryByActor = query({
   handler: async (ctx, args) => {
     let results = await ctx.db
       .query("auditLogs")
-      .withIndex("by_actor_timestamp", (q) => q.eq("actorId", args.actorId))
+      .withIndex("by_actor_timestamp", (q) => {
+        const q2 = q.eq("actorId", args.actorId);
+        return args.fromTimestamp ? q2.gte("timestamp", args.fromTimestamp) : q2;
+      })
       .order("desc")
       .take(args.limit ?? 50);
-
-    if (args.fromTimestamp) {
-      results = results.filter((log) => log.timestamp >= args.fromTimestamp!);
-    }
 
     if (args.actions && args.actions.length > 0) {
       results = results.filter((log) => args.actions!.includes(log.action));
@@ -196,7 +216,10 @@ export const queryBySeverity = query({
     for (const sev of args.severity) {
       const results = await ctx.db
         .query("auditLogs")
-        .withIndex("by_severity_timestamp", (q) => q.eq("severity", sev))
+        .withIndex("by_severity_timestamp", (q) => {
+          const q2 = q.eq("severity", sev);
+          return args.fromTimestamp ? q2.gte("timestamp", args.fromTimestamp) : q2;
+        })
         .order("desc")
         .take(args.limit ?? 50);
 
@@ -204,9 +227,6 @@ export const queryBySeverity = query({
     }
 
     return allResults
-      .filter((log) =>
-        args.fromTimestamp ? log.timestamp >= args.fromTimestamp : true
-      )
       .sort((a, b) => b.timestamp - a.timestamp)
       .slice(0, args.limit ?? 50);
   },
@@ -223,15 +243,14 @@ export const queryByAction = query({
   },
   returns: v.array(auditLogValidator),
   handler: async (ctx, args) => {
-    let results = await ctx.db
+    const results = await ctx.db
       .query("auditLogs")
-      .withIndex("by_action_timestamp", (q) => q.eq("action", args.action))
+      .withIndex("by_action_timestamp", (q) => {
+        const q2 = q.eq("action", args.action);
+        return args.fromTimestamp ? q2.gte("timestamp", args.fromTimestamp) : q2;
+      })
       .order("desc")
       .take(args.limit ?? 50);
-
-    if (args.fromTimestamp) {
-      results = results.filter((log) => log.timestamp >= args.fromTimestamp!);
-    }
 
     return results;
   },
@@ -254,18 +273,47 @@ export const search = query({
     const { filters, pagination } = args;
     const limit = pagination.limit;
 
-    let results = await ctx.db
-      .query("auditLogs")
-      .withIndex("by_timestamp")
-      .order("desc")
-      .take(limit * 10);
+    // If we have a cursor, look up its timestamp to resume from
+    let cursorTimestamp: number | undefined;
+    if (pagination.cursor) {
+      const cursorId = ctx.db.normalizeId("auditLogs", pagination.cursor);
+      if (cursorId) {
+        const cursorDoc = await ctx.db.get(cursorId);
+        if (cursorDoc) {
+          cursorTimestamp = cursorDoc.timestamp;
+        }
+      }
+    }
 
-    if (filters.fromTimestamp) {
-      results = results.filter((log) => log.timestamp >= filters.fromTimestamp!);
-    }
-    if (filters.toTimestamp) {
-      results = results.filter((log) => log.timestamp <= filters.toTimestamp!);
-    }
+    // Determine effective upper bound: cursor takes priority over toTimestamp
+    const upperBound = cursorTimestamp ?? filters.toTimestamp;
+    const upperInclusive = !cursorTimestamp && !!filters.toTimestamp;
+
+    // Push timestamp filters into the index
+    const docs = await ctx.db
+      .query("auditLogs")
+      .withIndex("by_timestamp", (q) => {
+        if (filters.fromTimestamp && upperBound) {
+          const lower = q.gte("timestamp", filters.fromTimestamp);
+          return upperInclusive
+            ? lower.lte("timestamp", upperBound)
+            : lower.lt("timestamp", upperBound);
+        }
+        if (filters.fromTimestamp) {
+          return q.gte("timestamp", filters.fromTimestamp);
+        }
+        if (upperBound) {
+          return upperInclusive
+            ? q.lte("timestamp", upperBound)
+            : q.lt("timestamp", upperBound);
+        }
+        return q;
+      })
+      .order("desc")
+      .take((limit + 1) * 5); // Over-fetch to account for in-memory filters
+
+    // Apply remaining filters that can't use the index
+    let results = docs;
     if (filters.severity && filters.severity.length > 0) {
       results = results.filter((log) =>
         filters.severity!.includes(log.severity)
@@ -292,19 +340,8 @@ export const search = query({
       );
     }
 
-    // Apply cursor-based pagination
-    let startIndex = 0;
-    if (pagination.cursor) {
-      const cursorIndex = results.findIndex(
-        (log) => log._id === pagination.cursor
-      );
-      if (cursorIndex !== -1) {
-        startIndex = cursorIndex + 1;
-      }
-    }
-
-    const paginatedResults = results.slice(startIndex, startIndex + limit);
-    const hasMore = startIndex + limit < results.length;
+    const paginatedResults = results.slice(0, limit);
+    const hasMore = results.length > limit;
     const cursor = paginatedResults.length > 0
       ? paginatedResults[paginatedResults.length - 1]._id
       : null;
@@ -335,7 +372,7 @@ export const watchCritical = query({
     for (const sev of severityLevels) {
       const results = await ctx.db
         .query("auditLogs")
-        .withIndex("by_severity_timestamp", (q) => q.eq("severity", sev as Severity))
+        .withIndex("by_severity_timestamp", (q) => q.eq("severity", sev))
         .order("desc")
         .take(limit);
 
@@ -357,16 +394,12 @@ export const get = query({
   },
   returns: v.union(v.null(), auditLogValidator),
   handler: async (ctx, args) => {
-    try {
-      const result = await ctx.db.get(args.id as any);
-      // Only return if it's an audit log (not a config document)
-      if (result && "action" in result) {
-        return result;
-      }
-      return null;
-    } catch {
+    const normalizedId = ctx.db.normalizeId("auditLogs", args.id);
+    if (!normalizedId) {
       return null;
     }
+    const result = await ctx.db.get(normalizedId);
+    return result ?? null;
   },
 });
 
@@ -710,16 +743,14 @@ export const getStats = query({
 
     // For top actions and actors, we need to read a sample of logs
     // Limited to MAX_STATS_SAMPLE_SIZE to prevent unbounded queries
-    const recentLogs = await ctx.db
+    const logs = await ctx.db
       .query("auditLogs")
-      .withIndex("by_timestamp", (q) => q.gte("timestamp", fromTimestamp))
+      .withIndex("by_timestamp", (q) => {
+        const q2 = q.gte("timestamp", fromTimestamp);
+        return args.toTimestamp ? q2.lte("timestamp", args.toTimestamp) : q2;
+      })
       .order("desc")
       .take(MAX_STATS_SAMPLE_SIZE);
-
-    // Apply toTimestamp filter in memory if specified
-    const logs = args.toTimestamp
-      ? recentLogs.filter((log) => log.timestamp <= args.toTimestamp!)
-      : recentLogs;
 
     const actionCounts: Record<string, number> = {};
     const actorCounts: Record<string, number> = {};
@@ -755,57 +786,7 @@ export const getStats = query({
 
 /**
  * Backfill aggregates for existing audit log data.
- * Run this once after upgrading to populate the aggregate tables.
- * This is an internal mutation that should be called from the client wrapper.
- */
-export const backfillAggregates = internalMutation({
-  args: {
-    cursor: v.optional(v.string()),
-    batchSize: v.optional(v.number()),
-  },
-  returns: v.object({
-    processed: v.number(),
-    cursor: v.union(v.string(), v.null()),
-    isDone: v.boolean(),
-  }),
-  handler: async (ctx, args) => {
-    const batchSize = args.batchSize ?? 100;
-
-    let query = ctx.db.query("auditLogs").order("asc");
-
-    // Resume from cursor if provided
-    if (args.cursor) {
-      const cursorDoc = await ctx.db.get(args.cursor as Id<"auditLogs">);
-      if (cursorDoc && "timestamp" in cursorDoc) {
-        query = ctx.db
-          .query("auditLogs")
-          .withIndex("by_timestamp", (q) => q.gt("timestamp", cursorDoc.timestamp))
-          .order("asc");
-      }
-    }
-
-    const docs = await query.take(batchSize + 1);
-    const hasMore = docs.length > batchSize;
-    const toProcess = hasMore ? docs.slice(0, batchSize) : docs;
-
-    for (const doc of toProcess) {
-      // Insert into both aggregates
-      await aggregateBySeverity.insertIfDoesNotExist(ctx, doc);
-      await aggregateByAction.insertIfDoesNotExist(ctx, doc);
-    }
-
-    const lastDoc = toProcess[toProcess.length - 1];
-
-    return {
-      processed: toProcess.length,
-      cursor: hasMore && lastDoc ? lastDoc._id : null,
-      isDone: !hasMore,
-    };
-  },
-});
-
-/**
- * Public mutation to trigger backfill. Call this to populate aggregates.
+ * Call repeatedly until isDone is true to populate aggregate tables.
  */
 export const runBackfill = mutation({
   args: {
@@ -824,12 +805,15 @@ export const runBackfill = mutation({
 
     // Resume from cursor if provided
     if (args.cursor) {
-      const cursorDoc = await ctx.db.get(args.cursor as Id<"auditLogs">);
-      if (cursorDoc && "timestamp" in cursorDoc) {
-        query = ctx.db
-          .query("auditLogs")
-          .withIndex("by_timestamp", (q) => q.gt("timestamp", cursorDoc.timestamp))
-          .order("asc");
+      const cursorId = ctx.db.normalizeId("auditLogs", args.cursor);
+      if (cursorId) {
+        const cursorDoc = await ctx.db.get(cursorId);
+        if (cursorDoc) {
+          query = ctx.db
+            .query("auditLogs")
+            .withIndex("by_timestamp", (q) => q.gt("timestamp", cursorDoc.timestamp))
+            .order("asc");
+        }
       }
     }
 

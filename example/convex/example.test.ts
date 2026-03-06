@@ -301,6 +301,9 @@ describe("audit log example", () => {
         });
       }
 
+      // Flush async aggregate updates before querying
+      await t.finishAllScheduledFunctions(vi.advanceTimersByTime.bind(vi, 1));
+
       const anomalies = await t.query(api.example.detectLoginAnomalies, {});
 
       const loginAnomaly = anomalies.find(
@@ -322,6 +325,9 @@ describe("audit log example", () => {
           attemptedAction: "read",
         });
       }
+
+      // Flush async aggregate updates before querying
+      await t.finishAllScheduledFunctions(vi.advanceTimersByTime.bind(vi, 1));
 
       const anomalies = await t.query(api.example.detectLoginAnomalies, {});
 
@@ -360,6 +366,9 @@ describe("audit log example", () => {
         resourceId: "data",
         attemptedAction: "read",
       });
+
+      // Flush async aggregate updates before querying stats
+      await t.finishAllScheduledFunctions(vi.advanceTimersByTime.bind(vi, 1));
 
       const stats = await t.query(api.example.getAuditStats, { hoursBack: 24 });
 

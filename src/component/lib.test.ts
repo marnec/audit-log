@@ -147,6 +147,9 @@ describe("audit log component", () => {
       severity: "warning",
     });
 
+    // Flush async aggregate updates before querying stats
+    await t.finishAllScheduledFunctions(vi.advanceTimersByTime.bind(vi, 1));
+
     const stats = await t.query(api.lib.getStats, {});
 
     expect(stats.totalCount).toBe(3);
