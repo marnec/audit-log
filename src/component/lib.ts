@@ -838,6 +838,65 @@ export const runBackfill = mutation({
 });
 
 /**
+ * Batch-rename action prefixes (e.g. "task." → "tasks.").
+ * Scans all entries, patching any whose action starts with oldPrefix.
+ * Call repeatedly until isDone is true.
+ */
+export const migrateActionPrefix = mutation({
+  args: {
+    oldPrefix: v.string(),
+    newPrefix: v.string(),
+    cursor: v.optional(v.string()),
+    batchSize: v.optional(v.number()),
+  },
+  returns: v.object({
+    migrated: v.number(),
+    scanned: v.number(),
+    cursor: v.union(v.string(), v.null()),
+    isDone: v.boolean(),
+  }),
+  handler: async (ctx, args) => {
+    const batchSize = args.batchSize ?? 100;
+
+    let query = ctx.db.query("auditLogs").withIndex("by_timestamp");
+
+    if (args.cursor) {
+      const cursorId = ctx.db.normalizeId("auditLogs", args.cursor);
+      if (cursorId) {
+        const cursorDoc = await ctx.db.get(cursorId);
+        if (cursorDoc) {
+          query = ctx.db
+            .query("auditLogs")
+            .withIndex("by_timestamp", (q) => q.gt("timestamp", cursorDoc.timestamp));
+        }
+      }
+    }
+
+    const docs = await query.order("asc").take(batchSize + 1);
+    const hasMore = docs.length > batchSize;
+    const toProcess = hasMore ? docs.slice(0, batchSize) : docs;
+
+    let migrated = 0;
+    for (const doc of toProcess) {
+      if (doc.action.startsWith(args.oldPrefix)) {
+        const newAction = args.newPrefix + doc.action.slice(args.oldPrefix.length);
+        await ctx.db.patch(doc._id, { action: newAction });
+        migrated++;
+      }
+    }
+
+    const lastDoc = toProcess[toProcess.length - 1];
+
+    return {
+      migrated,
+      scanned: toProcess.length,
+      cursor: hasMore && lastDoc ? lastDoc._id : null,
+      isDone: !hasMore,
+    };
+  },
+});
+
+/**
  * Generate a simple diff between two objects.
  */
 function generateDiff(before: unknown, after: unknown): string {

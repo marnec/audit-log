@@ -368,6 +368,22 @@ export class AuditLog {
     });
   }
 
+  /**
+   * Migrate action prefixes in bulk (e.g. "task." → "tasks.").
+   * Call repeatedly until isDone is true.
+   */
+  async migrateActionPrefix(
+    ctx: MutationCtx,
+    args: { oldPrefix: string; newPrefix: string; cursor?: string | null; batchSize?: number }
+  ): Promise<{ migrated: number; scanned: number; cursor: string | null; isDone: boolean }> {
+    return await ctx.runMutation(this.component.lib.migrateActionPrefix, {
+      oldPrefix: args.oldPrefix,
+      newPrefix: args.newPrefix,
+      cursor: args.cursor ?? undefined,
+      batchSize: args.batchSize,
+    });
+  }
+
   private redactPII(event: AuditEventInput): AuditEventInput {
     if (!event.metadata || this.piiFields.size === 0) {
       return event;
