@@ -36,6 +36,7 @@ export interface AuditEventInput {
   sessionId?: string;
   tags?: string[];
   retentionCategory?: string;
+  scope?: string;
 }
 
 /**
@@ -55,6 +56,7 @@ export interface ChangeEventInput {
   sessionId?: string;
   tags?: string[];
   retentionCategory?: string;
+  scope?: string;
 }
 
 /**
@@ -68,6 +70,7 @@ export interface QueryFilters {
   fromTimestamp?: number;
   toTimestamp?: number;
   tags?: string[];
+  scope?: string;
 }
 
 /**
@@ -242,6 +245,21 @@ export class AuditLog {
   }
 
   /**
+   * Query audit logs by scope (e.g. all activity within a workspace).
+   */
+  async queryByScope(
+    ctx: QueryCtx,
+    args: {
+      scope: string;
+      limit?: number;
+      fromTimestamp?: number;
+      resourceTypes?: string[];
+    }
+  ) {
+    return await ctx.runQuery(this.component.lib.queryByScope, args);
+  }
+
+  /**
    * Advanced search with multiple filters.
    */
   async search(
@@ -382,6 +400,29 @@ export class AuditLog {
       cursor: args.cursor ?? undefined,
       batchSize: args.batchSize,
     });
+  }
+
+  /**
+   * Scan entries that have no scope set (for backfill migrations).
+   */
+  async scanWithoutScope(
+    ctx: QueryCtx,
+    args?: { cursor?: string | null; batchSize?: number }
+  ) {
+    return await ctx.runQuery(this.component.lib.scanWithoutScope, {
+      cursor: args?.cursor ?? undefined,
+      batchSize: args?.batchSize,
+    });
+  }
+
+  /**
+   * Batch-set scope on entries (for backfill migrations).
+   */
+  async batchSetScope(
+    ctx: MutationCtx,
+    patches: { id: string; scope: string }[]
+  ): Promise<number> {
+    return await ctx.runMutation(this.component.lib.batchSetScope, { patches });
   }
 
   private redactPII(event: AuditEventInput): AuditEventInput {

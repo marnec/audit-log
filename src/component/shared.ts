@@ -26,6 +26,7 @@ export const vAuditEventInput = v.object({
   sessionId: v.optional(v.string()),
   tags: v.optional(v.array(v.string())),
   retentionCategory: v.optional(v.string()),
+  scope: v.optional(v.string()),
 });
 
 /**
@@ -45,6 +46,7 @@ export const vChangeEventInput = v.object({
   sessionId: v.optional(v.string()),
   tags: v.optional(v.array(v.string())),
   retentionCategory: v.optional(v.string()),
+  scope: v.optional(v.string()),
 });
 
 /**
@@ -58,6 +60,7 @@ export const vQueryFilters = v.object({
   fromTimestamp: v.optional(v.number()),
   toTimestamp: v.optional(v.number()),
   tags: v.optional(v.array(v.string())),
+  scope: v.optional(v.string()),
 });
 
 /**
@@ -134,6 +137,7 @@ export type AuditEvent = AuditEventInput & {
   before?: unknown;
   after?: unknown;
   diff?: string;
+  scope?: string;
 };
 
 /**

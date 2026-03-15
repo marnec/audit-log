@@ -35,6 +35,9 @@ export default defineSchema({
 
     // Retention category for cleanup policies
     retentionCategory: v.optional(v.string()),
+
+    // Hierarchical scope for filtering (e.g. workspaceId)
+    scope: v.optional(v.string()),
   })
     // Query by action type with time ordering
     .index("by_action_timestamp", ["action", "timestamp"])
@@ -47,7 +50,9 @@ export default defineSchema({
     // Query by timestamp for time-range queries
     .index("by_timestamp", ["timestamp"])
     // Query by retention category for cleanup
-    .index("by_retention_timestamp", ["retentionCategory", "timestamp"]),
+    .index("by_retention_timestamp", ["retentionCategory", "timestamp"])
+    // Query by scope with time ordering (e.g. all activity in a workspace)
+    .index("by_scope_timestamp", ["scope", "timestamp"]),
 
   /**
    * Configuration table for component settings.

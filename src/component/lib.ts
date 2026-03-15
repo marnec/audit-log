@@ -109,6 +109,7 @@ export const logChange = mutation({
       sessionId: args.sessionId,
       tags: args.tags,
       retentionCategory: args.retentionCategory,
+      scope: args.scope,
       timestamp,
     });
 
@@ -251,6 +252,41 @@ export const queryByAction = query({
       })
       .order("desc")
       .take(args.limit ?? 50);
+
+    return results;
+  },
+});
+
+/**
+ * Query audit logs by scope (e.g. all activity within a workspace).
+ */
+export const queryByScope = query({
+  args: {
+    scope: v.string(),
+    limit: v.optional(v.number()),
+    fromTimestamp: v.optional(v.number()),
+    resourceTypes: v.optional(v.array(v.string())),
+  },
+  returns: v.array(auditLogValidator),
+  handler: async (ctx, args) => {
+    const limit = args.limit ?? 50;
+    // Over-fetch if we need to filter by resourceType in-memory
+    const fetchLimit = args.resourceTypes ? limit * 3 : limit;
+
+    const results = await ctx.db
+      .query("auditLogs")
+      .withIndex("by_scope_timestamp", (q) => {
+        const q2 = q.eq("scope", args.scope);
+        return args.fromTimestamp ? q2.gte("timestamp", args.fromTimestamp) : q2;
+      })
+      .order("desc")
+      .take(fetchLimit);
+
+    if (args.resourceTypes && args.resourceTypes.length > 0) {
+      return results
+        .filter((log) => log.resourceType && args.resourceTypes!.includes(log.resourceType))
+        .slice(0, limit);
+    }
 
     return results;
   },
@@ -893,6 +929,88 @@ export const migrateActionPrefix = mutation({
       cursor: hasMore && lastDoc ? lastDoc._id : null,
       isDone: !hasMore,
     };
+  },
+});
+
+/**
+ * Scan audit log entries that have no scope set.
+ * Returns entries with their resourceType/resourceId so the caller can resolve scope.
+ */
+export const scanWithoutScope = query({
+  args: {
+    cursor: v.optional(v.string()),
+    batchSize: v.optional(v.number()),
+  },
+  returns: v.object({
+    items: v.array(v.object({
+      _id: v.id("auditLogs"),
+      resourceType: v.optional(v.string()),
+      resourceId: v.optional(v.string()),
+    })),
+    cursor: v.union(v.string(), v.null()),
+    isDone: v.boolean(),
+  }),
+  handler: async (ctx, args) => {
+    const batchSize = args.batchSize ?? 100;
+
+    let q = ctx.db.query("auditLogs").withIndex("by_timestamp");
+
+    if (args.cursor) {
+      const cursorId = ctx.db.normalizeId("auditLogs", args.cursor);
+      if (cursorId) {
+        const cursorDoc = await ctx.db.get(cursorId);
+        if (cursorDoc) {
+          q = ctx.db
+            .query("auditLogs")
+            .withIndex("by_timestamp", (r) => r.gt("timestamp", cursorDoc.timestamp));
+        }
+      }
+    }
+
+    const docs = await q.order("asc").take(batchSize + 1);
+    const hasMore = docs.length > batchSize;
+    const toReturn = hasMore ? docs.slice(0, batchSize) : docs;
+
+    // Only return entries that don't have scope
+    const items = toReturn
+      .filter((doc) => !doc.scope)
+      .map((doc) => ({
+        _id: doc._id,
+        resourceType: doc.resourceType,
+        resourceId: doc.resourceId,
+      }));
+
+    const lastDoc = toReturn[toReturn.length - 1];
+
+    return {
+      items,
+      cursor: hasMore && lastDoc ? lastDoc._id : null,
+      isDone: !hasMore,
+    };
+  },
+});
+
+/**
+ * Batch-set scope on audit log entries.
+ */
+export const batchSetScope = mutation({
+  args: {
+    patches: v.array(v.object({
+      id: v.id("auditLogs"),
+      scope: v.string(),
+    })),
+  },
+  returns: v.number(),
+  handler: async (ctx, args) => {
+    let patched = 0;
+    for (const { id, scope } of args.patches) {
+      const doc = await ctx.db.get(id);
+      if (doc && !doc.scope) {
+        await ctx.db.patch(id, { scope });
+        patched++;
+      }
+    }
+    return patched;
   },
 });
 
