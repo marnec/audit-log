@@ -249,6 +249,36 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         }>,
         Name
       >;
+      queryByActionResource: FunctionReference<
+        "query",
+        "internal",
+        {
+          action: string;
+          fromTimestamp?: number;
+          limit?: number;
+          resourceId: string;
+        },
+        Array<{
+          _creationTime: number;
+          _id: string;
+          action: string;
+          actorId?: string;
+          after?: any;
+          before?: any;
+          diff?: string;
+          ipAddress?: string;
+          metadata?: any;
+          resourceId?: string;
+          resourceType?: string;
+          retentionCategory?: string;
+          sessionId?: string;
+          severity: "info" | "warning" | "error" | "critical";
+          tags?: Array<string>;
+          timestamp: number;
+          userAgent?: string;
+        }>,
+        Name
+      >;
       queryByResource: FunctionReference<
         "query",
         "internal",

@@ -173,6 +173,29 @@ export const queryByResource = query({
 });
 
 /**
+ * Query audit logs by action + resource (e.g. for rate-limiting checks).
+ */
+export const queryByActionResource = query({
+  args: {
+    action: v.string(),
+    resourceId: v.string(),
+    limit: v.optional(v.number()),
+    fromTimestamp: v.optional(v.number()),
+  },
+  returns: v.array(auditLogValidator),
+  handler: async (ctx, args) => {
+    return await ctx.db
+      .query("auditLogs")
+      .withIndex("by_action_resource", (q) => {
+        const q2 = q.eq("action", args.action).eq("resourceId", args.resourceId);
+        return args.fromTimestamp ? q2.gte("timestamp", args.fromTimestamp) : q2;
+      })
+      .order("desc")
+      .take(args.limit ?? 20);
+  },
+});
+
+/**
  * Query audit logs by actor (user).
  */
 export const queryByActor = query({

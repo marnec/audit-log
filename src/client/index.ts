@@ -202,6 +202,21 @@ export class AuditLog {
   }
 
   /**
+   * Query audit logs by action + resource (e.g. for rate-limiting checks).
+   */
+  async queryByActionResource(
+    ctx: QueryCtx,
+    args: {
+      action: string;
+      resourceId: string;
+      limit?: number;
+      fromTimestamp?: number;
+    }
+  ) {
+    return await ctx.runQuery(this.component.lib.queryByActionResource, args);
+  }
+
+  /**
    * Query audit logs by actor (user).
    */
   async queryByActor(

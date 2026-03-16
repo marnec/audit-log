@@ -45,6 +45,8 @@ export default defineSchema({
     .index("by_actor_timestamp", ["actorId", "timestamp"])
     // Query by resource with time ordering
     .index("by_resource", ["resourceType", "resourceId", "timestamp"])
+    // Query by action + resource for rate-limiting checks
+    .index("by_action_resource", ["action", "resourceId", "timestamp"])
     // Query by severity level with time ordering
     .index("by_severity_timestamp", ["severity", "timestamp"])
     // Query by timestamp for time-range queries
