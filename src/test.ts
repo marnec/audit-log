@@ -15,7 +15,7 @@ export function register(
   t: TestConvex<SchemaDefinition<GenericSchema, boolean>>,
   name: string = "auditLog",
 ) {
-  t.registerComponent(name, schema, modules);
+  t.registerComponent(name, schema as SchemaDefinition<GenericSchema, boolean>, modules);
   // Register aggregate sub-components
   aggregate.register(t, `${name}/aggregateBySeverity`);
   aggregate.register(t, `${name}/aggregateByAction`);
