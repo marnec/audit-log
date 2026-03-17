@@ -114,6 +114,7 @@
   "types": "./dist/client/index.d.ts",
   "module": "./dist/client/index.js",
   "dependencies": {
-    "@convex-dev/aggregate": "^0.2.1"
+    "@convex-dev/aggregate": "^0.2.1",
+    "convex-helpers": "^0.1.114"
   }
 }

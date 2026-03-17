@@ -54,7 +54,9 @@ export default defineSchema({
     // Query by retention category for cleanup
     .index("by_retention_timestamp", ["retentionCategory", "timestamp"])
     // Query by scope with time ordering (e.g. all activity in a workspace)
-    .index("by_scope_timestamp", ["scope", "timestamp"]),
+    .index("by_scope_timestamp", ["scope", "timestamp"])
+    // Query by scope + resource type with time ordering (filtered activity feeds)
+    .index("by_scope_resourceType_timestamp", ["scope", "resourceType", "timestamp"]),
 
   /**
    * Configuration table for component settings.

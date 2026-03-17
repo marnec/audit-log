@@ -7,6 +7,7 @@ import {
 import type { Id } from "./_generated/dataModel.js";
 import { internal } from "./_generated/api.js";
 import schema from "./schema.js";
+import { stream, mergedStream } from "convex-helpers/server/stream";
 import {
   vSeverity,
   vAuditEventInput,
@@ -282,6 +283,8 @@ export const queryByAction = query({
 
 /**
  * Query audit logs by scope (e.g. all activity within a workspace).
+ * When resourceTypes is provided, uses a compound index + mergedStream
+ * for efficient indexed filtering without over-fetching.
  */
 export const queryByScope = query({
   args: {
@@ -293,25 +296,32 @@ export const queryByScope = query({
   returns: v.array(auditLogValidator),
   handler: async (ctx, args) => {
     const limit = args.limit ?? 50;
-    // Over-fetch if we need to filter by resourceType in-memory
-    const fetchLimit = args.resourceTypes ? limit * 3 : limit;
 
-    const results = await ctx.db
-      .query("auditLogs")
-      .withIndex("by_scope_timestamp", (q) => {
-        const q2 = q.eq("scope", args.scope);
-        return args.fromTimestamp ? q2.gte("timestamp", args.fromTimestamp) : q2;
-      })
-      .order("desc")
-      .take(fetchLimit);
-
-    if (args.resourceTypes && args.resourceTypes.length > 0) {
-      return results
-        .filter((log) => log.resourceType && args.resourceTypes!.includes(log.resourceType))
-        .slice(0, limit);
+    // When no resourceTypes filter, use the simple scope+timestamp index
+    if (!args.resourceTypes || args.resourceTypes.length === 0) {
+      return ctx.db
+        .query("auditLogs")
+        .withIndex("by_scope_timestamp", (q) => {
+          const q2 = q.eq("scope", args.scope);
+          return args.fromTimestamp ? q2.gte("timestamp", args.fromTimestamp) : q2;
+        })
+        .order("desc")
+        .take(limit);
     }
 
-    return results;
+    // With resourceTypes filter: one indexed stream per type, merged by timestamp
+    const streams = args.resourceTypes.map((resourceType) =>
+      stream(ctx.db, schema)
+        .query("auditLogs")
+        .withIndex("by_scope_resourceType_timestamp", (q) => {
+          const q2 = q.eq("scope", args.scope).eq("resourceType", resourceType);
+          return args.fromTimestamp ? q2.gte("timestamp", args.fromTimestamp) : q2;
+        })
+        .order("desc"),
+    );
+
+    const merged = mergedStream(streams, ["timestamp"]);
+    return merged.take(limit);
   },
 });
 
